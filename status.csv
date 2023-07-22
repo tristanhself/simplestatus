@@ -1,0 +1,10 @@
+servicegroup,service,comment,status
+Connectivity,Network,,OK
+Connectivity,Internet Connection,,OK
+Applications,Email (and Instant Messaging),,OK
+Applications,Identity and Authentication Services,,OK
+Compute,VMware Platform,,OK
+Storage,Block Storage,,OK
+Storage,NFS Storage,,OK
+Database Services,MySQL Databases,,OK
+Database Services,MSSQL Databases,,OK

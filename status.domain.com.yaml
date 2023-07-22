@@ -1,0 +1,253 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS Cloudformation Template - AWS Static Website Template v8.0 - status.domain.com
+# There is a one-to-one relationship implied by the of the CloudFront CDN to the origin (S3 Bucket(s) of the website. i.e. You need one distribution per website. To this end, the use 
+# of a CloudFormation Stack per website seems logical, although not necessary it gives the option for either hard-coding the variables of the site into the Stack template, or passing
+# them in at runtime. In this particular configuration, having one Stack Template per website and not passing in parameters to create or update means the entire "configuration" of a
+# website can be held within the Stack Template, the website resource files are of course held within the relevant S3 bucket.
+#
+# CloudFront allows for publishing a website via an auto-generated endpoint FQDN (e.g. d2vjgket99pivd.cloudfront.net) out across the whole world without the need for infrastructure to
+# support this massive scale and availability. All requests are sourced from the origin S3 bucket (or cache depending). You can specify multiple origin S3 buckets (within an origin
+# group), it is therefore recommended to have at least two S3 Buckets located in different AWS Regions and a failover rule configured, so that the prolonged loss of a particular S3
+# bucket does not result in the loss of a website's availability.
+#
+# The CloudFront allows for use of the Web Application Firewall and AWS Shield to provide additional protection of your resources from attack and also excessive service/bandwidth charges.
+#
+# A very simple example that deploys a static website using a (origin) S3 bucket for the website files, CloudFront (CDN) with SSL Certificate, with web access logging enabled into 
+# another separate S3 bucket for logging purposes.
+#  
+# Usage Steps:
+
+# 1. Make a copy of the CloudFormation template file and name to your site's FQDN, e.g. "status.domain.com.yaml".
+# 2. Create SSL Certificate that references the FQDN(s) (of the site). Once created get the ARN of this certificate for use within this template. The certificate must be created 
+# in us-east-1 even if the CloudFront Distribution is not being used in us-east-1.
+# The certificate should also have a tag which is the same as the tag of the Stack, you may find this easier to add at the end of this.
+# 3. Cutomise your template file as follows:
+#    3.1. Update the "Description" (line 2) with the primary FQDN of the website.
+#    3.2. Update the parameter "DomainName" with the site's primary FQDN, e.g. "status.domain.com".
+#    3.3. Update the parameter "CertificateARN" with the ARN of the certificate you just created.
+# 4. Deploy the template:
+#    aws cloudformation create-stack --template-body file://<Site FQDN>.yaml --stack-name <Site FQDN>
+#    NOTE: The Stack-Name must only contain letters, numbers and hyphens only.
+# 5. Using the output CNAME for the CloudFront Distribution create a CNAME to point your site FQDN(s) at this CloudFront Distribution CNAME.
+# 6. Upload content to the site S3 Bucket for presentation.
+# 7. Test and verify operation, verify logging is working as expected.
+# 8. Add the tag to the SSL Certificate, if you have not yet done this.
+
+##################################################
+# Site Parameters - Inputs
+##################################################
+
+Parameters:
+  
+  DomainName:
+    Description: The primary FQDN of the website, it will also become the prefix for all Origin and Logging bucket names to ensure uniqueness and ease of identification.
+    Type: String
+    Default: "status.domain.com"
+
+  CertificateARN:
+    Description: The ARN of the certificate to be used by the CloudFront Distribution. Certificate must be in us-east-1.
+    Type: String
+    Default: "<Certificate ARN Here>"
+
+Resources:
+
+##################################################
+# S3 Origin Bucket Configuration (Website Source)
+##################################################
+
+  OriginBucket1:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ['-',[!Ref 'DomainName', 'originbucket1']]
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Stack
+          Value: !Sub '${AWS::StackName}'
+        - Key: Name
+          Value: !Join ['-',[!Ref 'DomainName', 'originbucket1']]
+
+#TO DO:
+# Create second origin bucket.
+# Specify S3 region for each bucket
+# Sepcify replication from Origin1 to Origin2.
+
+##########################################################################
+# CloudFront Distribution
+##########################################################################
+
+  OriginDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases:
+          - !Ref 'DomainName'
+        Comment: !Ref 'DomainName'
+        CacheBehaviors:
+          - PathPattern: /index.html
+            AllowedMethods:
+            - GET
+            - HEAD
+            TargetOriginId: OriginBucket1 #S3Origin
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # CachingDisabled - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html#managed-cache-policy-caching-disabled
+            ViewerProtocolPolicy: allow-all
+        DefaultCacheBehavior:
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: OriginBucket1 #S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt IndexHandlerFunction.FunctionMetadata.FunctionARN
+        DefaultRootObject: index.html
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 300
+            ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /error.html
+          - ErrorCachingMinTTL: 300
+            ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /error.html
+        Enabled: true
+        HttpVersion: http2
+        IPV6Enabled: true
+        Origins:
+          - Id: OriginBucket1
+            DomainName: !GetAtt OriginBucket1.DomainName # Refers to the FQDN of the S3 Bucket
+            S3OriginConfig:
+              OriginAccessIdentity: '' #old way
+            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+        PriceClass: PriceClass_All # Global Distribution 'PriceClass_All', 'PriceClass_200' US and EU, 'PriceClass_100' Asia.
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateARN
+          MinimumProtocolVersion: TLSv1
+          SslSupportMethod: sni-only
+        Logging:
+          Bucket: !GetAtt AccessLogBucket.DomainName # Refers to the FQDN of the S3 Bucket
+          IncludeCookies: false
+          Prefix: cloudfront/
+      Tags:
+        - Key: Stack
+          Value: !Sub '${AWS::StackName}'
+        - Key: Name
+          Value: !Join ['-',[!Ref 'DomainName', 'cloudfront-distribution']]
+
+  IndexHandlerFunction:
+      Type: AWS::CloudFront::Function
+      Properties:
+        AutoPublish: true
+        FunctionCode: !Sub |
+          function handler(event) {
+              var request = event.request;
+              var uri = request.uri;
+      
+              // Check whether the URI is missing a file name.
+              if (uri.endsWith('/')) {
+                  request.uri += 'index.html';
+              } // Check whether the URI is missing a file extension.
+              else if (!uri.includes('.')) {
+                  request.uri += '/index.html';
+              }
+                  return request;
+          }
+        FunctionConfig:
+          Comment: "Handler for index.html in subdirectories."
+          Runtime: cloudfront-js-1.0
+        Name: !Sub "${AWS::StackName}-IndexHandlerFunction"
+
+# TO DO:
+# 1. Configure multiple origin source buckets for higher availability.
+# 2. Make the certificate ARN a parameter that you set at the top. DONE!
+# 3. Enable WAF to protect the origin resources and distribution.
+
+######################################################################################################
+# S3 Origin Bucket Policy Configuration - Allows access to Origin Buckets from CloudFront Distribution
+######################################################################################################
+
+  OriginBucket1Policy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref OriginBucket1
+      PolicyDocument:
+        Statement:
+        - Action: s3:GetObject
+          Effect: Allow
+          Resource: !Sub ${OriginBucket1.Arn}/*
+          Principal:
+            Service: cloudfront.amazonaws.com
+          Condition:
+            StringEquals:
+              AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${OriginDistribution}
+
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties: 
+      OriginAccessControlConfig:
+        Description: !Join [' - ',[!Ref 'DomainName', 'Origin Access Control']]
+        Name: !Join ['-',[!Sub '${AWS::StackName}', 'oac']]
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+#######################################################
+# S3 Logging Bucket Configuration (Logging Destination)
+#######################################################
+
+  AccessLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ['-',[!Ref 'DomainName', 'accesslogbucket']]
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: ObjectWriter # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-s3-bucket-ownershipcontrolsrule.html
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: Retain2yrs
+            Status: Enabled
+            ExpirationInDays: 730
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      Tags:
+      - Key: Stack
+        Value: !Sub '${AWS::StackName}'
+      - Key: Name
+        Value: !Join ['-',[!Ref 'DomainName', 'accesslogbucket']]
+
+  AccessLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:* # Bit open, don't you think?
+            Resource:
+              - !Sub ${AccessLogBucket.Arn}/*
+              - !GetAtt AccessLogBucket.Arn
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${OriginDistribution}
+
+##################################################
+# Outputs
+##################################################
+
+Outputs:
+
+  CloudFrontDomainName:
+    Description: "FQDN to point CNAMEs(that clients will use) to access your website."
+    Value: !GetAtt OriginDistribution.DomainName
