@@ -1,0 +1,33 @@
+stages:
+  - prepare
+  - upload
+  
+prepare files:
+  stage: prepare
+  image: 
+    name: python:3.10
+  tags:
+    - autoscale
+  script:
+    - pip install -r requirements.txt
+    - python update-status.py
+  artifacts:
+    paths:
+      - ./www
+  
+upload to s3:
+  stage: upload
+  only:
+    - main@simplestatus
+  image:
+    name: banst/awscli
+    entrypoint: [""]
+  tags:
+    - autoscale
+  script:
+    - echo $S3_BUCKET
+    - aws configure set region eu-west-2
+    - aws s3 cp ./www/index.html s3://$S3_BUCKET/index.html
+    - aws s3 cp ./www/logo.png s3://$S3_BUCKET/logo.png
+    - aws s3 cp ./www/error.html s3://$S3_BUCKET/error.html
+    - aws s3 cp ./www/favicon.ico s3://$S3_BUCKET/favicon.ico
